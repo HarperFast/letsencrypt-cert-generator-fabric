@@ -23,6 +23,28 @@ server.http(async (request, next) => {
     return next(request);
 });
 
+async function performHttpChallengeWithRetry(domain) {
+    const maxRetries = 5;
+    const initialDelay = 120000; // 2 minutes
+    let lastError;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            await performHttpChallenge(domain);
+            return; // Success
+        } catch (error) {
+            lastError = error;
+            if (attempt < maxRetries) {
+                const delay = initialDelay * Math.pow(2, attempt);
+                logger.warn(`HTTP challenge attempt ${attempt + 1} failed for ${domain}, retrying in ${delay}ms:`, error.message);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            } else {
+                logger.error(`HTTP challenge failed for ${domain} after ${maxRetries + 1} attempts:`, lastError);
+            }
+        }
+    }
+}
+
 const startSubscription = async () => {
     try {
         for await (let event of await tables.ChallengeCertificate.subscribe()) {
@@ -31,7 +53,8 @@ const startSubscription = async () => {
                 if (!data) continue;
                 if (!data.challengeToken) {
                     if (await isChallengeLeader()) {
-                        await performHttpChallenge(data.domain);
+                        // Fire and forget - don't block other events
+                        performHttpChallengeWithRetry(data.domain);
                     }
                 }
             } catch (err) {
@@ -49,7 +72,7 @@ const startSubscription = async () => {
 // We only want this to trigger one time.
 if (server.workerIndex === 0) {
     startSubscription();
-    setInterval(async () => {
+    const interval = setInterval(async () => {
         for await (const challengeDomain of tables.ChallengeCertificate.search({
             conditions: [{attribute: 'renewalDate',  comparator: 'less_than', value: new Date()}]
         })){
@@ -58,6 +81,8 @@ if (server.workerIndex === 0) {
             }
         }
     }, 43200000); // Every 12 hours
+
+    interval.unref();
 }
 
 async function performHttpChallenge(domain, renewal = false) {
@@ -102,8 +127,8 @@ async function performHttpChallenge(domain, renewal = false) {
                 challengeContent: keyAuthorization
             });
 
-            // Wait for replication
-            await new Promise((resolve) => setTimeout(resolve, 3000));
+            // Wait for replication / restarts / component deployments (60 seconds)
+            await new Promise((resolve) => setTimeout(resolve, 60000));
 
             // Notify Let's Encrypt that we're ready for validation
             await client.completeChallenge(httpChallenge);
@@ -134,7 +159,9 @@ async function performHttpChallenge(domain, renewal = false) {
         await tables.ChallengeCertificate.put({
             domain: domain,
             issueDate: now,
-            renewalDate: renewalDate
+            renewalDate: renewalDate,
+            challengeToken: null,
+            challengeContent: null
         });
 
         console.log(`Certificate issued successfully for ${domain}`);
@@ -144,7 +171,8 @@ async function performHttpChallenge(domain, renewal = false) {
                 name: `${domain}`,
                 certificate:`${cert}`,
                 is_authority: false,
-                private_key: `${privateKey}`
+                private_key: `${privateKey}`,
+                replicated: true
             });
 
         return cert;
