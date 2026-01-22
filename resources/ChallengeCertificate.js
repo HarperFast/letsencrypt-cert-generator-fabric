@@ -25,6 +25,7 @@ server.http(async (request, next) => {
 
 async function performHttpChallengeWithRetry(domain, initialDelay = 0) {
 	logger.notify("Waiting to start http challenge for domain:", domain);
+
   const maxRetries = 5;
   const delayInterval = 120000; // 2 minutes
   let lastError;
@@ -36,7 +37,6 @@ async function performHttpChallengeWithRetry(domain, initialDelay = 0) {
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      logger.notify("Starting http challenge for domain:", domain);
       await performHttpChallenge(domain);
       return; // Success
     } catch (error) {
@@ -59,10 +59,16 @@ const startSubscription = async () => {
         const domain = event.value?.domain;
         const challengeToken = event.value?.challengeToken;
 				const issueDate = event.value?.issueDate;
+				const inProgress = event.value?.inProgress;
         if (!domain) continue;
-        if (!challengeToken && !issueDate) {
+        if (!challengeToken && !issueDate && !inProgress) {
           const { isLeader, totalNodes } = await isChallengeLeader();
           if (isLeader) {
+						await tables.ChallengeCertificate.patch({
+							domain: domain,
+							inProgress: true
+						});
+
             // Wait 60 seconds per additional node before starting the challenge for deployment
             const initialDelay = (totalNodes - 1) * 60000;
             // Fire and forget - don't block other events
@@ -90,6 +96,11 @@ if (server.workerIndex === 0) {
     })){
       const { isLeader } = await isChallengeLeader();
       if (isLeader) {
+				await tables.ChallengeCertificate.patch({
+					domain: domain,
+					inProgress: true
+				});
+
         await performHttpChallenge(challengeDomain.domain, true);
       }
     }
@@ -137,7 +148,7 @@ async function performHttpChallenge(domain, renewal = false) {
       const keyAuthorization = await client.getChallengeKeyAuthorization(httpChallenge);
 
       // Store challenge in database so WellKnown.js can serve it
-      await tables.ChallengeCertificate.put({
+      await tables.ChallengeCertificate.patch({
         domain: domain,
         challengeToken: httpChallenge.token,
         challengeContent: keyAuthorization
@@ -177,7 +188,8 @@ async function performHttpChallenge(domain, renewal = false) {
       issueDate: now,
       renewalDate: renewalDate,
       challengeToken: null,
-      challengeContent: null
+      challengeContent: null,
+			inProgress: false,
     });
 
     logger.notify(`Certificate issued successfully for ${domain}`);

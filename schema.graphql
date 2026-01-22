@@ -4,4 +4,5 @@ type ChallengeCertificate @table @sealed {
     renewalDate: Date @indexed
     challengeToken: String @indexed
     challengeContent: String
+    inProgress: Boolean
 }
