@@ -10,5 +10,10 @@
   },
   "devDependencies": {
     "prettier": "^3.3.3"
+  },
+  "overrides": {
+    "acme-client": {
+      "axios": "1.13.2"
+    }
   }
 }
