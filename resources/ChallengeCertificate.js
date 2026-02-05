@@ -142,7 +142,7 @@ if (server.workerIndex === 0) {
       if (isLeader) {
 				// Mark as in progress to prevent duplicate renewal attempts
 				await tables.ChallengeCertificate.patch({
-					domain: domain,
+					domain: challengeDomain.domain,
 					inProgress: true
 				});
 
