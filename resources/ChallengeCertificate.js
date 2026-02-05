@@ -140,12 +140,6 @@ if (server.workerIndex === 0) {
     })){
       const { isLeader } = await isChallengeLeader();
       if (isLeader) {
-				// Mark as in progress to prevent duplicate renewal attempts
-				await tables.ChallengeCertificate.patch({
-					domain: challengeDomain.domain,
-					inProgress: true
-				});
-
         // Perform renewal challenge
         await performHttpChallenge(challengeDomain.domain, true);
       }
