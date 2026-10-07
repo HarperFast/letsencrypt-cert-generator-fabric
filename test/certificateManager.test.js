@@ -228,9 +228,10 @@ function createHarness({
 	isLeader = true,
 	accountTable,
 	installTimeoutMs,
+	table = createTable(records),
+	sleep = async () => {},
 } = {}) {
 	let clock = T0;
-	const table = createTable(records);
 	const { ca, fakeAcme } = createFakeAcme(table, { lifetimeDays, clock: () => clock });
 	const installs = [];
 	const logs = [];
@@ -280,8 +281,9 @@ function createHarness({
 		getLeadership: async () => ({ isLeader, totalNodes: 3 }),
 		installTimeoutMs,
 		logger: { notify: level('notify'), warn: level('warn'), error: level('error'), trace: level('trace') },
-		sleep: async (ms) => {
+		sleep: (ms) => {
 			sleeps.push(ms);
+			return sleep(ms);
 		},
 		now: () => clock,
 	});
@@ -348,6 +350,25 @@ describe('certificate manager', () => {
 		await harness.scan();
 		assert.ok(harness.row().issueDate);
 		assert.equal(harness.installs.length, 1);
+	});
+
+	it('recovers when the process stops mid-attempt and a new one starts', async () => {
+		const accountTable = createAccountTable();
+		const stopped = createHarness({
+			accountTable,
+			records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }],
+			sleep: () => new Promise(() => {}),
+		});
+		stopped.manager.scan();
+		while (!stopped.row().challengeToken) await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(stopped.row().inProgress, true);
+
+		const restarted = createHarness({ accountTable, table: stopped.table });
+		await restarted.scan();
+		assert.equal(restarted.installs.length, 1);
+		assert.ok(stopped.row().issueDate);
+		assert.equal(stopped.row().inProgress, false);
+		assert.equal(stopped.installs.length, 0);
 	});
 
 	it('completes an order the CA creates ready because the authorization is still valid', async () => {
