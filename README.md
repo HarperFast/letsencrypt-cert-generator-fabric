@@ -4,6 +4,8 @@ This was added to your cluster to support completing the challenge and getting c
 This application will renew your certificates for you.
 If you no longer wish to use your own certificates, you can unbind your domain from your cluster in [Fabric Studio](https://fabric.harper.fast)
 
+Requires Harper 5.0.2 or later.
+
 ## How it works
 
 Each bound domain is a record in the `ChallengeCertificate` table. One node in the cluster (the first entry in
