@@ -9,7 +9,7 @@ const ACME_REQUEST_TIMEOUT_MS = 30_000;
  */
 server.http(async (request, next) => {
 	const token = challengeTokenFromUrl(request.url);
-	if (token) {
+	if (token && tables.ChallengeCertificate) {
 		for await (const challenge of tables.ChallengeCertificate.search({
 			conditions: [{ attribute: 'challengeToken', comparator: 'equals', value: token }],
 		})) {
