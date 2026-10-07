@@ -4,6 +4,11 @@
   "description": "Handle HTTP Challenge for Let's Encrypt",
   "prettier": "@harperdb/code-guidelines/prettier",
   "type": "module",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "format": "prettier --write lib resources test",
+    "format:check": "prettier --check lib resources test"
+  },
   "dependencies": {
     "@harperdb/code-guidelines": "^0.0.2",
     "acme-client": "^5.4.0"
