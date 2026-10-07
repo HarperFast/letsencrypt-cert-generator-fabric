@@ -40,6 +40,10 @@ describe('nextStep', () => {
 		assert.equal(nextStep(issued, T0), 'attempt');
 		assert.equal(nextStep({ ...issued, failedAttempts: 1, nextAttemptAt: new Date(T0 + MINUTE) }, T0), 'none');
 	});
+
+	it('renews an issued certificate whose renewal date is missing', () => {
+		assert.equal(nextStep({ domain: DOMAIN, issueDate: new Date(T0 - DAY) }, T0), 'attempt');
+	});
 });
 
 describe('retryDelay', () => {
@@ -87,6 +91,7 @@ function createTable(records = []) {
 	return {
 		rows,
 		failNextGet: false,
+		failPatch: undefined,
 		async get(id) {
 			if (this.failNextGet) {
 				this.failNextGet = false;
@@ -100,6 +105,10 @@ function createTable(records = []) {
 		},
 		// Like an upsert: a patch for a missing row creates it, so callers have to check first.
 		async patch(record) {
+			if (this.failPatch?.(record)) {
+				this.failPatch = undefined;
+				throw new Error('patch failed');
+			}
 			rows.set(record.domain, { ...rows.get(record.domain), ...record });
 		},
 	};
@@ -213,7 +222,13 @@ function createFakeAcme(table, { lifetimeDays = 90, clock } = {}) {
 	return { ca, fakeAcme };
 }
 
-function createHarness({ records = [{ domain: DOMAIN }], lifetimeDays, isLeader = true, accountTable } = {}) {
+function createHarness({
+	records = [{ domain: DOMAIN }],
+	lifetimeDays,
+	isLeader = true,
+	accountTable,
+	installTimeoutMs,
+} = {}) {
 	let clock = T0;
 	const table = createTable(records);
 	const { ca, fakeAcme } = createFakeAcme(table, { lifetimeDays, clock: () => clock });
@@ -227,6 +242,7 @@ function createHarness({ records = [{ domain: DOMAIN }], lifetimeDays, isLeader 
 		logs,
 		sleeps,
 		failInstalls: 0,
+		hangInstalls: 0,
 		accountTable: accountTable ?? createAccountTable(),
 		advance(ms) {
 			clock += ms;
@@ -252,12 +268,17 @@ function createHarness({ records = [{ domain: DOMAIN }], lifetimeDays, isLeader 
 				privateKey,
 				issuedBeforeInstall: Boolean(table.rows.get(domain)?.issueDate),
 			});
+			if (harness.hangInstalls > 0) {
+				harness.hangInstalls--;
+				return new Promise(() => {});
+			}
 			if (harness.failInstalls > 0) {
 				harness.failInstalls--;
 				throw new Error('add_certificate failed');
 			}
 		},
 		getLeadership: async () => ({ isLeader, totalNodes: 3 }),
+		installTimeoutMs,
 		logger: { notify: level('notify'), warn: level('warn'), error: level('error'), trace: level('trace') },
 		sleep: async (ms) => {
 			sleeps.push(ms);
@@ -359,6 +380,31 @@ describe('certificate manager', () => {
 		assert.ok(harness.row().issueDate);
 	});
 
+	it('reinstalls instead of requesting again when recording the success fails', async () => {
+		const harness = createHarness({ records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }] });
+		harness.table.failPatch = (record) => Boolean(record.issueDate);
+		await harness.scan();
+		assert.equal(harness.row().failedAttempts, 1);
+
+		harness.advance(RETRY_BASE_DELAY_MS);
+		await harness.scan();
+		assert.equal(harness.ca.orders, 1);
+		assert.equal(harness.installs.length, 2);
+		assert.ok(harness.row().issueDate);
+	});
+
+	it('gives up on an install that never finishes and retries it', async () => {
+		const harness = createHarness({ installTimeoutMs: 10, records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }] });
+		harness.hangInstalls = 1;
+		await harness.scan();
+		assert.match(harness.row().lastError, /did not finish/);
+
+		harness.advance(RETRY_BASE_DELAY_MS);
+		await harness.scan();
+		assert.equal(harness.ca.orders, 1);
+		assert.ok(harness.row().issueDate);
+	});
+
 	it('renews a due certificate on the CA lifetime it was issued with', async () => {
 		const harness = createHarness({
 			lifetimeDays: 45,
@@ -439,6 +485,31 @@ describe('certificate manager', () => {
 		t.mock.timers.tick(1000);
 		assert.equal(subscriptions, 1);
 		assert.deepEqual(errors, []);
+	});
+
+	it('restarts a subscription that ends', async (t) => {
+		t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+		const table = createTable();
+		let subscriptions = 0;
+		table.subscribe = async () => {
+			subscriptions++;
+			return (async function* () {})();
+		};
+		const logs = [];
+		const manager = createCertificateManager({
+			tables: { ChallengeCertificate: table, AcmeAccount: createAccountTable() },
+			acme,
+			directoryUrl: DIRECTORY_URL,
+			installCertificate: async () => {},
+			getLeadership: async () => ({ isLeader: false, totalNodes: 1 }),
+			logger: { warn: (message) => logs.push(message) },
+		});
+		manager.start();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(subscriptions, 1);
+		t.mock.timers.tick(5000);
+		assert.equal(subscriptions, 2);
+		assert.match(logs[0], /subscription ended/);
 	});
 
 	it('does nothing on a node that is not the leader', async () => {
