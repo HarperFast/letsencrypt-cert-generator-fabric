@@ -131,9 +131,9 @@ function createAccountTable() {
  * A CA behind acme-client's real `auto()` flow. The overridden calls follow acme-client 5.4.0 order
  * semantics, in particular `getCertificate` reading a `ready` order as final.
  */
-function createFakeAcme(table, { lifetimeDays = 90, clock } = {}) {
+function createFakeAcme(table, { lifetimeDays = 90, clock, accountKeys = new Set() } = {}) {
 	const ca = {
-		accountKeys: new Set(),
+		accountKeys,
 		accountsCreated: 0,
 		orders: 0,
 		completed: [],
@@ -145,9 +145,17 @@ function createFakeAcme(table, { lifetimeDays = 90, clock } = {}) {
 	};
 	class Client extends acme.Client {
 		#registered = false;
-		async createAccount() {
-			ca.accountsCreated++;
-			ca.accountKeys.add(this.opts.accountKey.toString());
+		// Like Let's Encrypt and Pebble: a key the CA already knows may only look its account up.
+		async createAccount(data) {
+			const key = this.opts.accountKey.toString();
+			if (ca.accountKeys.has(key) && !data.onlyReturnExisting) {
+				throw new Error('Use POST-as-GET to retrieve account data instead of doing an empty update');
+			}
+			if (!ca.accountKeys.has(key)) {
+				if (data.onlyReturnExisting) throw new Error('No existing account for signature key');
+				ca.accountsCreated++;
+				ca.accountKeys.add(key);
+			}
 			this.#registered = true;
 			return {};
 		}
@@ -230,9 +238,10 @@ function createHarness({
 	installTimeoutMs,
 	table = createTable(records),
 	sleep = async () => {},
+	caAccountKeys,
 } = {}) {
 	let clock = T0;
-	const { ca, fakeAcme } = createFakeAcme(table, { lifetimeDays, clock: () => clock });
+	const { ca, fakeAcme } = createFakeAcme(table, { lifetimeDays, clock: () => clock, accountKeys: caAccountKeys });
 	const installs = [];
 	const logs = [];
 	const sleeps = [];
@@ -463,20 +472,39 @@ describe('certificate manager', () => {
 		assert.equal(harness.ca.orders, 1);
 	});
 
-	it('creates one ACME account key and reuses it across attempts and restarts', async () => {
+	it('creates one ACME account and looks it up again after a restart', async () => {
 		const accountTable = createAccountTable();
+		const caAccountKeys = new Set();
 		const records = [
 			{ domain: DOMAIN, nextAttemptAt: new Date(T0) },
 			{ domain: 'api.example.com', nextAttemptAt: new Date(T0) },
 		];
-		const first = createHarness({ records, accountTable });
+		const first = createHarness({ records, accountTable, caAccountKeys });
 		await first.scan();
 		assert.equal(first.ca.accountsCreated, 1, 'concurrent attempts share one account registration');
 
-		const afterRestart = createHarness({ records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }], accountTable });
+		const afterRestart = createHarness({
+			records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }],
+			accountTable,
+			caAccountKeys,
+		});
 		await afterRestart.scan();
+		assert.ok(afterRestart.row().issueDate);
+		assert.equal(afterRestart.ca.accountsCreated, 0);
 		assert.equal(accountTable.rows.size, 1);
-		assert.deepEqual([...afterRestart.ca.accountKeys], [...first.ca.accountKeys]);
+		assert.equal(caAccountKeys.size, 1);
+	});
+
+	it('registers a stored account key the CA does not know', async () => {
+		const accountTable = createAccountTable();
+		const first = createHarness({ accountTable, records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }] });
+		await first.scan();
+
+		const newCa = createHarness({ accountTable, records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }] });
+		await newCa.scan();
+		assert.ok(newCa.row().issueDate);
+		assert.equal(newCa.ca.accountsCreated, 1);
+		assert.deepEqual([...newCa.ca.accountKeys], [...first.ca.accountKeys]);
 	});
 
 	it('waits for the component tables to load before starting', (t) => {
