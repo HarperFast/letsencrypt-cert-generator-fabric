@@ -26,19 +26,16 @@ server.http(async (request, next) => {
 });
 
 /**
- * Only the first node in hdb_nodes requests certificates, so the cluster makes one request per domain.
- * A node with no hdb_nodes entries is not clustered and leads itself.
+ * Only the alphabetically first node in hdb_nodes requests certificates, so the cluster makes one
+ * request per domain. A node with no hdb_nodes entries is not clustered and leads itself.
  */
 async function getLeadership() {
-	let totalNodes = 0;
-	let firstNodeName;
-	for await (const hdbNode of databases.system.hdb_nodes.search()) {
-		totalNodes++;
-		firstNodeName ??= hdbNode.name;
-	}
+	const nodeNames = [];
+	for await (const hdbNode of databases.system.hdb_nodes.search()) nodeNames.push(hdbNode.name);
+	nodeNames.sort();
 	return {
-		isLeader: totalNodes === 0 || firstNodeName === server.config.replication?.hostname,
-		totalNodes,
+		isLeader: nodeNames.length === 0 || nodeNames[0] === server.config.replication?.hostname,
+		totalNodes: nodeNames.length,
 	};
 }
 
