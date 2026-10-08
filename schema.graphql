@@ -5,4 +5,7 @@ type ChallengeCertificate @table @sealed {
     challengeToken: String @indexed
     challengeContent: String
     inProgress: Boolean
+    failedAttempts: Int
+    nextAttemptAt: Date
+    lastError: String
 }
