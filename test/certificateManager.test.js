@@ -114,26 +114,12 @@ function createTable(records = []) {
 	};
 }
 
-function createAccountTable() {
-	const rows = new Map();
-	return {
-		rows,
-		async get(id) {
-			return rows.get(id);
-		},
-		async put(record) {
-			rows.set(record.directoryUrl, { ...record });
-		},
-	};
-}
-
 /**
  * A CA behind acme-client's real `auto()` flow. The overridden calls follow acme-client 5.4.0 order
  * semantics, in particular `getCertificate` reading a `ready` order as final.
  */
-function createFakeAcme(table, { lifetimeDays = 90, clock, accountKeys = new Set() } = {}) {
+function createFakeAcme(table, { lifetimeDays = 90, clock } = {}) {
 	const ca = {
-		accountKeys,
 		accountsCreated: 0,
 		orders: 0,
 		completed: [],
@@ -145,17 +131,8 @@ function createFakeAcme(table, { lifetimeDays = 90, clock, accountKeys = new Set
 	};
 	class Client extends acme.Client {
 		#registered = false;
-		// Like Let's Encrypt and Pebble: a key the CA already knows may only look its account up.
-		async createAccount(data) {
-			const key = this.opts.accountKey.toString();
-			if (ca.accountKeys.has(key) && !data.onlyReturnExisting) {
-				throw new Error('Use POST-as-GET to retrieve account data instead of doing an empty update');
-			}
-			if (!ca.accountKeys.has(key)) {
-				if (data.onlyReturnExisting) throw new Error('No existing account for signature key');
-				ca.accountsCreated++;
-				ca.accountKeys.add(key);
-			}
+		async createAccount() {
+			ca.accountsCreated++;
 			this.#registered = true;
 			return {};
 		}
@@ -234,14 +211,12 @@ function createHarness({
 	records = [{ domain: DOMAIN }],
 	lifetimeDays,
 	isLeader = true,
-	accountTable,
 	installTimeoutMs,
 	table = createTable(records),
 	sleep = async () => {},
-	caAccountKeys,
 } = {}) {
 	let clock = T0;
-	const { ca, fakeAcme } = createFakeAcme(table, { lifetimeDays, clock: () => clock, accountKeys: caAccountKeys });
+	const { ca, fakeAcme } = createFakeAcme(table, { lifetimeDays, clock: () => clock });
 	const installs = [];
 	const logs = [];
 	const sleeps = [];
@@ -253,7 +228,6 @@ function createHarness({
 		sleeps,
 		failInstalls: 0,
 		hangInstalls: 0,
-		accountTable: accountTable ?? createAccountTable(),
 		advance(ms) {
 			clock += ms;
 		},
@@ -268,7 +242,7 @@ function createHarness({
 		(...args) =>
 			logs.push({ level: name, message: args.map(String).join(' ') });
 	harness.manager = createCertificateManager({
-		tables: { ChallengeCertificate: table, AcmeAccount: harness.accountTable },
+		tables: { ChallengeCertificate: table },
 		acme: fakeAcme,
 		directoryUrl: DIRECTORY_URL,
 		installCertificate: async (domain, certificate, privateKey) => {
@@ -362,9 +336,7 @@ describe('certificate manager', () => {
 	});
 
 	it('recovers when the process stops mid-attempt and a new one starts', async () => {
-		const accountTable = createAccountTable();
 		const stopped = createHarness({
-			accountTable,
 			records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }],
 			sleep: () => new Promise(() => {}),
 		});
@@ -372,7 +344,7 @@ describe('certificate manager', () => {
 		while (!stopped.row().challengeToken) await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(stopped.row().inProgress, true);
 
-		const restarted = createHarness({ accountTable, table: stopped.table });
+		const restarted = createHarness({ table: stopped.table });
 		await restarted.scan();
 		assert.equal(restarted.installs.length, 1);
 		assert.ok(stopped.row().issueDate);
@@ -472,39 +444,20 @@ describe('certificate manager', () => {
 		assert.equal(harness.ca.orders, 1);
 	});
 
-	it('creates one ACME account and looks it up again after a restart', async () => {
-		const accountTable = createAccountTable();
-		const caAccountKeys = new Set();
-		const records = [
-			{ domain: DOMAIN, nextAttemptAt: new Date(T0) },
-			{ domain: 'api.example.com', nextAttemptAt: new Date(T0) },
-		];
-		const first = createHarness({ records, accountTable, caAccountKeys });
-		await first.scan();
-		assert.equal(first.ca.accountsCreated, 1, 'concurrent attempts share one account registration');
-
-		const afterRestart = createHarness({
-			records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }],
-			accountTable,
-			caAccountKeys,
+	it('registers one ACME account per process and reuses it', async () => {
+		const harness = createHarness({
+			records: [
+				{ domain: DOMAIN, nextAttemptAt: new Date(T0) },
+				{ domain: 'api.example.com', nextAttemptAt: new Date(T0) },
+			],
 		});
-		await afterRestart.scan();
-		assert.ok(afterRestart.row().issueDate);
-		assert.equal(afterRestart.ca.accountsCreated, 0);
-		assert.equal(accountTable.rows.size, 1);
-		assert.equal(caAccountKeys.size, 1);
-	});
-
-	it('registers a stored account key the CA does not know', async () => {
-		const accountTable = createAccountTable();
-		const first = createHarness({ accountTable, records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }] });
-		await first.scan();
-
-		const newCa = createHarness({ accountTable, records: [{ domain: DOMAIN, nextAttemptAt: new Date(T0) }] });
-		await newCa.scan();
-		assert.ok(newCa.row().issueDate);
-		assert.equal(newCa.ca.accountsCreated, 1);
-		assert.deepEqual([...newCa.ca.accountKeys], [...first.ca.accountKeys]);
+		harness.ca.failValidations = 1;
+		await harness.scan();
+		harness.advance(RETRY_BASE_DELAY_MS);
+		await harness.scan();
+		assert.ok(harness.row().issueDate);
+		assert.ok(harness.table.rows.get('api.example.com').issueDate);
+		assert.equal(harness.ca.accountsCreated, 1);
 	});
 
 	it('waits for the component tables to load before starting', (t) => {
@@ -530,7 +483,6 @@ describe('certificate manager', () => {
 		assert.equal(subscriptions, 0);
 
 		tables.ChallengeCertificate = table;
-		tables.AcmeAccount = createAccountTable();
 		t.mock.timers.tick(1000);
 		assert.equal(subscriptions, 1);
 		assert.deepEqual(errors, []);
@@ -546,7 +498,7 @@ describe('certificate manager', () => {
 		};
 		const logs = [];
 		const manager = createCertificateManager({
-			tables: { ChallengeCertificate: table, AcmeAccount: createAccountTable() },
+			tables: { ChallengeCertificate: table },
 			acme,
 			directoryUrl: DIRECTORY_URL,
 			installCertificate: async () => {},

@@ -9,8 +9,3 @@ type ChallengeCertificate @table @sealed {
     nextAttemptAt: Date
     lastError: String
 }
-
-type AcmeAccount @table @sealed {
-    directoryUrl: ID! @primaryKey
-    accountKey: String
-}
