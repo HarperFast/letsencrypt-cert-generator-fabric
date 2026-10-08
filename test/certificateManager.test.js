@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as acme from 'acme-client';
@@ -65,6 +66,13 @@ describe('renewalDateFor', () => {
 			renewalDateFor({ notBefore: new Date(T0), notAfter: new Date(T0 + 45 * DAY) }, T0).getTime(),
 			T0 + 30 * DAY
 		);
+	});
+
+	it('takes the renewal date from the leaf of a real certificate chain', () => {
+		// fixtures/chain.pem: a 90-day leaf from 2026-10-08T16:18:29Z, followed by a 5-year intermediate
+		const chain = readFileSync(new URL('./fixtures/chain.pem', import.meta.url), 'utf8');
+		const renewalDate = renewalDateFor(acme.crypto.readCertificateInfo(chain), T0);
+		assert.equal(renewalDate.toISOString(), '2026-12-07T16:18:29.000Z');
 	});
 
 	it('falls back to 30 days when the certificate dates are unusable', () => {
