@@ -89,6 +89,12 @@ describe('preserveAcmeNetworkErrors', () => {
 		});
 	});
 
+	it('refuses an axios whose interceptors it cannot reorder, and can be retried', () => {
+		const fakeAxios = { interceptors: { response: { use: () => assert.fail('nothing should be registered') } } };
+		assert.throws(() => preserveAcmeNetworkErrors({ axios: fakeAxios }), /handlers array/);
+		assert.throws(() => preserveAcmeNetworkErrors({ axios: fakeAxios }), /handlers array/);
+	});
+
 	it('installs its interceptor once', () => {
 		const count = acme.axios.interceptors.response.handlers.filter(Boolean).length;
 		preserveAcmeNetworkErrors(acme);
