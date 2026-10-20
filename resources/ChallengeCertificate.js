@@ -1,4 +1,5 @@
 import * as acme from 'acme-client';
+import { preserveAcmeNetworkErrors } from '../lib/acmeNetworkErrors.js';
 import { challengeTokenFromUrl, createCertificateManager } from '../lib/certificateManager.js';
 
 const ACME_REQUEST_TIMEOUT_MS = 30_000;
@@ -41,6 +42,7 @@ async function getLeadership() {
 
 if (server.workerIndex === 0) {
 	acme.axios.defaults.timeout = ACME_REQUEST_TIMEOUT_MS;
+	preserveAcmeNetworkErrors(acme);
 	acme.setLogger((message) => {
 		if (message.startsWith('Caught ')) logger.warn(`acme-client: ${message}`);
 		else logger.trace(`acme-client: ${message}`);
