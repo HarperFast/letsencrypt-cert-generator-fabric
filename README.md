@@ -35,7 +35,16 @@ Useful fields on a `ChallengeCertificate` record:
 npm install
 npm test
 npm run format:check
+npm run typecheck
+npm run test:integration
 ```
+
+`npm run test:integration` starts Harper with this component for each suite in `integrationTests/`, using
+[@harperfast/integration-testing](https://www.npmjs.com/package/@harperfast/integration-testing). Each instance needs
+its own loopback address: Linux has them by default; on macOS run `npx harper-integration-test-setup-loopback` once
+(it uses `sudo`). The suites never contact Let's Encrypt: they point the component at a local ACME address that either
+does not exist or rejects every request. Set `HARPER_INTEGRATION_TEST_INSTALL_SCRIPT` to the `dist/bin/harper.js` of
+another Harper build, such as `@harperfast/harper-pro`, to run them against it.
 
 Set `ACME_DIRECTORY_URL` to request certificates from a different ACME server, such as
 [Let's Encrypt staging](https://letsencrypt.org/docs/staging-environment/) or a local
