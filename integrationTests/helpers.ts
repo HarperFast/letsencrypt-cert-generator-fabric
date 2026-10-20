@@ -1,6 +1,3 @@
-/**
- * Starts Harper with this component loaded and calls the started instance's Operations API and HTTP server.
- */
 import { ok } from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -36,8 +33,7 @@ function resolveHarperBin(): string {
 	}
 }
 
-// HARPER_INTEGRATION_TEST_INSTALL_SCRIPT, read by the harness, runs the suites against another Harper build
-// (such as @harperfast/harper-pro, which Fabric runs).
+// The harness reads HARPER_INTEGRATION_TEST_INSTALL_SCRIPT itself, e.g. to run against @harperfast/harper-pro.
 const harperBinPath = process.env.HARPER_INTEGRATION_TEST_INSTALL_SCRIPT ? undefined : resolveHarperBin();
 
 export function startHarperWithComponent(ctx: ContextWithHarper, env: Record<string, string> = {}) {
@@ -54,7 +50,7 @@ function basicAuth(ctx: ContextWithHarper): string {
 	return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 }
 
-export async function op<T = unknown>(
+export async function runOperation<T = unknown>(
 	ctx: ContextWithHarper,
 	operation: Record<string, unknown>
 ): Promise<{ status: number; body: T }> {
@@ -92,14 +88,14 @@ export interface ChallengeCertificateRecord {
 }
 
 export async function upsertChallengeCertificates(ctx: ContextWithHarper, records: ChallengeCertificateRecord[]) {
-	return op(ctx, { operation: 'upsert', database: 'data', table: 'ChallengeCertificate', records });
+	return runOperation(ctx, { operation: 'upsert', database: 'data', table: 'ChallengeCertificate', records });
 }
 
 export async function getChallengeCertificate(
 	ctx: ContextWithHarper,
 	domain: string
 ): Promise<ChallengeCertificateRecord | undefined> {
-	const { status, body } = await op<ChallengeCertificateRecord[]>(ctx, {
+	const { status, body } = await runOperation<ChallengeCertificateRecord[]>(ctx, {
 		operation: 'search_by_id',
 		database: 'data',
 		table: 'ChallengeCertificate',

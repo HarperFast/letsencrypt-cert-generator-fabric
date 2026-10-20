@@ -1,6 +1,4 @@
 /**
- * The ChallengeCertificate table and the ACME HTTP-01 challenge middleware on a real Harper.
- *
  * Records are seeded as issued (issuedFields) so the certificate manager leaves them alone; attempts are
  * covered by certificate-retry.test.ts. The table is not REST-exported, so it is reached through the
  * Operations API.
@@ -13,7 +11,7 @@ import {
 	authFetch,
 	getChallengeCertificate,
 	issuedFields,
-	op,
+	runOperation,
 	startHarperWithComponent,
 	upsertChallengeCertificates,
 	waitFor,
@@ -34,7 +32,7 @@ suite('Harper startup', (ctx: ContextWithHarper) => {
 	});
 
 	test('ChallengeCertificate table is created with every schema attribute', async () => {
-		const { status, body } = await op<{ attributes: { attribute: string }[] }>(ctx, {
+		const { status, body } = await runOperation<{ attributes: { attribute: string }[] }>(ctx, {
 			operation: 'describe_table',
 			database: 'data',
 			table: 'ChallengeCertificate',
@@ -114,7 +112,7 @@ suite('ChallengeCertificate table via Operations API', (ctx: ContextWithHarper) 
 			{ domain, challengeToken: 'searchable-token', challengeContent: 'searchable-token.keyauth', ...issuedFields() },
 		]);
 
-		const { status, body } = await op<{ domain: string }[]>(ctx, {
+		const { status, body } = await runOperation<{ domain: string }[]>(ctx, {
 			operation: 'search_by_conditions',
 			database: 'data',
 			table: 'ChallengeCertificate',
