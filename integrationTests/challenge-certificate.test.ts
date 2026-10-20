@@ -1,15 +1,9 @@
 /**
- * Integration tests for the ChallengeCertificate table and the ACME HTTP-01 challenge middleware.
+ * The ChallengeCertificate table and the ACME HTTP-01 challenge middleware on a real Harper.
  *
- * Covers:
- *  - Harper startup with this component loaded, and the ChallengeCertificate schema it creates.
- *  - ChallengeCertificate records via the Operations API. The table is not REST-exported (no @export in
- *    schema.graphql), so it is reached only through the Operations API and the component itself.
- *  - The middleware serving a stored challenge at /.well-known/acme-challenge/<token> without authentication,
- *    and passing every other request through, including challenge URLs for unknown tokens.
- *
- * Records here are seeded as already issued (see issuedFields) so the certificate manager leaves them alone;
- * certificate attempts are covered by certificate-retry.test.ts.
+ * Records are seeded as issued (issuedFields) so the certificate manager leaves them alone; attempts are
+ * covered by certificate-retry.test.ts. The table is not REST-exported, so it is reached through the
+ * Operations API.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, strictEqual, ok } from 'node:assert/strict';
@@ -35,8 +29,8 @@ suite('Harper startup', (ctx: ContextWithHarper) => {
 	});
 
 	test('Harper starts successfully with the component loaded', async () => {
-		const res = await authFetch(ctx, '/');
-		ok([200, 400, 404].includes(res.status), `Harper should be reachable, got HTTP ${res.status}`);
+		const response = await authFetch(ctx, '/');
+		ok([200, 400, 404].includes(response.status), `Harper should be reachable, got HTTP ${response.status}`);
 	});
 
 	test('ChallengeCertificate table is created with every schema attribute', async () => {
@@ -62,9 +56,19 @@ suite('Harper startup', (ctx: ContextWithHarper) => {
 		}
 	});
 
+	test('requests without credentials are not authorized', async () => {
+		// The middleware tests rely on this: a loopback request must not be treated as the superuser.
+		const response = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ operation: 'describe_all' }),
+		});
+		strictEqual(response.status, 401, `an anonymous operation should be refused, got HTTP ${response.status}`);
+	});
+
 	test('ChallengeCertificate is not exposed over REST', async () => {
-		const res = await authFetch(ctx, '/ChallengeCertificate/');
-		strictEqual(res.status, 404, `ChallengeCertificate should not be REST-exported, got HTTP ${res.status}`);
+		const response = await authFetch(ctx, '/ChallengeCertificate/');
+		strictEqual(response.status, 404, `ChallengeCertificate should not be REST-exported, got HTTP ${response.status}`);
 	});
 });
 
@@ -141,30 +145,34 @@ suite('ACME HTTP-01 challenge middleware', (ctx: ContextWithHarper) => {
 
 	test('serves the challenge content at /.well-known/acme-challenge/<token>', async () => {
 		// The middleware falls through until the component's table has loaded, so allow it a moment.
-		const res = await waitFor(
+		const { status, text } = await waitFor(
 			'the challenge to be served',
-			() => anonFetch(ctx, `/.well-known/acme-challenge/${TOKEN}`),
-			(res) => res.status === 200,
+			async () => {
+				const response = await anonFetch(ctx, `/.well-known/acme-challenge/${TOKEN}`);
+				return { status: response.status, text: await response.text() };
+			},
+			(result) => result.status === 200,
 			{ timeoutMs: 5000 }
 		);
-		strictEqual(await res.text(), KEY_AUTH, 'middleware should return the key authorization');
+		strictEqual(status, 200);
+		strictEqual(text, KEY_AUTH, 'middleware should return the key authorization');
 	});
 
 	test('ignores a query string on the challenge URL', async () => {
-		const res = await anonFetch(ctx, `/.well-known/acme-challenge/${TOKEN}?cache-bust=1`);
-		strictEqual(res.status, 200, `got HTTP ${res.status}`);
-		strictEqual(await res.text(), KEY_AUTH);
+		const response = await anonFetch(ctx, `/.well-known/acme-challenge/${TOKEN}?cache-bust=1`);
+		strictEqual(response.status, 200, `got HTTP ${response.status}`);
+		strictEqual(await response.text(), KEY_AUTH);
 	});
 
 	test('passes through a challenge URL for an unknown token', async () => {
-		const res = await anonFetch(ctx, '/.well-known/acme-challenge/nonexistent-token-xyz');
-		strictEqual(res.status, 404, `unknown token should pass through and return 404, got HTTP ${res.status}`);
-		ok(!(await res.text()).includes(KEY_AUTH), 'an unknown token must not be answered with another challenge');
+		const response = await anonFetch(ctx, '/.well-known/acme-challenge/nonexistent-token-xyz');
+		strictEqual(response.status, 404, `unknown token should pass through and return 404, got HTTP ${response.status}`);
+		ok(!(await response.text()).includes(KEY_AUTH), 'an unknown token must not be answered with another challenge');
 	});
 
 	test('passes through non-challenge URLs', async () => {
-		const res = await anonFetch(ctx, '/some/other/path');
-		strictEqual(res.status, 404, `non-challenge request should pass through, got HTTP ${res.status}`);
+		const response = await anonFetch(ctx, '/some/other/path');
+		strictEqual(response.status, 404, `non-challenge request should pass through, got HTTP ${response.status}`);
 	});
 
 	test('passes through challenge paths without exactly one token segment', async () => {
@@ -173,8 +181,8 @@ suite('ACME HTTP-01 challenge middleware', (ctx: ContextWithHarper) => {
 			'/.well-known/acme-challenge/',
 			`/.well-known/acme-challenge/${TOKEN}/extra`,
 		]) {
-			const res = await anonFetch(ctx, path);
-			strictEqual(res.status, 404, `${path} should pass through, got HTTP ${res.status}`);
+			const response = await anonFetch(ctx, path);
+			strictEqual(response.status, 404, `${path} should pass through, got HTTP ${response.status}`);
 		}
 	});
 });
