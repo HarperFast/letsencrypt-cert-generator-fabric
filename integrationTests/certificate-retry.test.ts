@@ -1,9 +1,8 @@
 /**
- * Certificate attempts and retries on a real Harper: its table, subscription and leader lookup.
- *
- * The component is pointed at a stand-in CA that rejects every request, so each attempt fails at the ACME
- * directory read. A CA that cannot be reached at all is retried by acme-client for over a minute per attempt.
- * Issuance is not covered: it needs a CA that can reach this node over HTTP.
+ * Runs against Harper's real table, subscription and leader lookup. The component is pointed at a stand-in CA
+ * that rejects every request, so each attempt fails at the ACME directory read. A CA that cannot be reached at
+ * all is retried by acme-client for over a minute per attempt. Issuance is not covered: it needs a CA that can
+ * reach this node over HTTP.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
@@ -27,6 +26,7 @@ const RETRY_BASE_DELAY_MS = 2 * 60 * 1000;
  * can arrive while that domain is still in flight and be dropped. The scan, every minute, then picks it up.
  */
 const ATTEMPT_TIMEOUT_MS = 90_000;
+const SCAN_INTERVAL_MS = 60_000;
 
 function assertFirstFailureRecorded(record: ChallengeCertificateRecord, attemptStartedAt: number) {
 	strictEqual(record.failedAttempts, 1);
@@ -63,6 +63,7 @@ suite('Certificate requests against a CA that rejects them', (ctx: ContextWithHa
 	// A failed startup or teardown must not leave the server holding the test process open.
 	rejectingCA.unref();
 	let directoryUrl: string;
+	let firstFailure: { domain: string; recordedAt: number; nextAttemptAt: unknown } | undefined;
 
 	before(async () => {
 		rejectingCA.listen(0, '127.0.0.1');
@@ -79,7 +80,7 @@ suite('Certificate requests against a CA that rejects them', (ctx: ContextWithHa
 		}
 	});
 
-	test('a newly bound domain is attempted, and not again before its retry is due', async () => {
+	test('a newly bound domain is attempted and its failure scheduled for retry', async () => {
 		const domain = 'new-domain.example.com';
 		const attemptStartedAt = Date.now();
 		const { status, body } = await upsertChallengeCertificates(ctx, [{ domain }]);
@@ -90,11 +91,7 @@ suite('Certificate requests against a CA that rejects them', (ctx: ContextWithHa
 		ok(directoryRequests > 0, 'the component should have requested the configured ACME directory');
 		strictEqual(record!.lastError, `Attempting to read ACME directory returned error 403: ${directoryUrl}`);
 
-		// The failure write reaches the subscription too; it must not start another attempt.
-		const requestsAfterFailure = directoryRequests;
-		await sleep(3000);
-		strictEqual(directoryRequests, requestsAfterFailure, 'no request should reach the CA before nextAttemptAt');
-		strictEqual((await getChallengeCertificate(ctx, domain))?.failedAttempts, 1);
+		firstFailure = { domain, recordedAt: Date.now(), nextAttemptAt: record!.nextAttemptAt };
 	});
 
 	test('a record left inProgress by an interrupted attempt is retried', async () => {
@@ -122,5 +119,19 @@ suite('Certificate requests against a CA that rejects them', (ctx: ContextWithHa
 		strictEqual(record.failedAttempts ?? null, null, 'no attempt should have been made');
 		strictEqual(record.nextAttemptAt ?? null, null, 'no attempt should have been scheduled');
 		strictEqual(new Date(record.renewalDate!).getTime(), issued.renewalDate);
+	});
+
+	test('a failed domain is not attempted again before its retry is due', async (t) => {
+		// Runs last so the wait overlaps the other tests. Past one scan, both the subscription and the scan have
+		// seen the failure write; attempting again on either would raise failedAttempts.
+		ok(firstFailure, 'the first test should have recorded a failure');
+		await sleep(Math.max(0, firstFailure.recordedAt + SCAN_INTERVAL_MS + 1000 - Date.now()));
+		const record = await getChallengeCertificate(ctx, firstFailure.domain);
+		if (Date.now() >= new Date(firstFailure.nextAttemptAt as string).getTime()) {
+			t.skip('the earlier tests ran past the retry time, so a second attempt is expected');
+			return;
+		}
+		strictEqual(record?.failedAttempts, 1);
+		strictEqual(record?.nextAttemptAt, firstFailure.nextAttemptAt);
 	});
 });
