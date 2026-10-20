@@ -8,7 +8,7 @@ import { setupHarperWithFixture, type ContextWithHarper } from '@harperfast/inte
 const FIXTURE_PATH = fileURLToPath(new URL('../', import.meta.url));
 
 // Nothing listens on port 1, so no suite can reach Let's Encrypt even if a record it writes is attempted.
-const UNREACHABLE_ACME_DIRECTORY = 'http://127.0.0.1:1/directory';
+export const UNREACHABLE_ACME_DIRECTORY = 'http://127.0.0.1:1/directory';
 
 /**
  * harper's `exports` map only exposes ".", so neither `harper/dist/bin/harper.js` (the harness' own lookup) nor
