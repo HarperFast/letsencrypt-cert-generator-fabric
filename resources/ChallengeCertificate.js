@@ -42,7 +42,12 @@ async function getLeadership() {
 
 if (server.workerIndex === 0) {
 	acme.axios.defaults.timeout = ACME_REQUEST_TIMEOUT_MS;
-	preserveAcmeNetworkErrors(acme);
+	try {
+		preserveAcmeNetworkErrors(acme);
+	} catch (error) {
+		// Only lastError's wording depends on it; certificate work must still start.
+		logger.warn('Could not keep acme-client network errors; an unreachable CA will be reported as a TypeError:', error);
+	}
 	acme.setLogger((message) => {
 		if (message.startsWith('Caught ')) logger.warn(`acme-client: ${message}`);
 		else logger.trace(`acme-client: ${message}`);
