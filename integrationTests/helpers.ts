@@ -1,6 +1,5 @@
 /**
- * Shared setup for the integration suites: starting Harper with this component loaded, and calling the
- * Operations API and HTTP server of the started instance.
+ * Starts Harper with this component loaded and calls the started instance's Operations API and HTTP server.
  */
 import { ok } from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
@@ -11,11 +10,8 @@ import { setupHarperWithFixture, type ContextWithHarper } from '@harperfast/inte
 
 const FIXTURE_PATH = fileURLToPath(new URL('../', import.meta.url));
 
-/**
- * Nothing listens on port 1. Every suite points the component here unless it says otherwise, so no test can
- * reach Let's Encrypt; suites seed records as issued so the component never tries.
- */
-export const UNREACHABLE_ACME_DIRECTORY = 'http://127.0.0.1:1/directory';
+// Nothing listens on port 1, so no suite can reach Let's Encrypt even if a record it writes is attempted.
+const UNREACHABLE_ACME_DIRECTORY = 'http://127.0.0.1:1/directory';
 
 /**
  * harper's `exports` map only exposes ".", so neither `harper/dist/bin/harper.js` (the harness' own lookup) nor
@@ -23,20 +19,20 @@ export const UNREACHABLE_ACME_DIRECTORY = 'http://127.0.0.1:1/directory';
  */
 function resolveHarperBin(): string {
 	const require = createRequire(import.meta.url);
-	let dir = dirname(require.resolve('harper'));
+	let directory = dirname(require.resolve('harper'));
 	while (true) {
-		const packageJsonPath = join(dir, 'package.json');
+		const packageJsonPath = join(directory, 'package.json');
 		if (existsSync(packageJsonPath)) {
 			const { name, bin } = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
 			if (name === 'harper') {
-				const binPath = resolve(dir, typeof bin === 'string' ? bin : bin.harper);
+				const binPath = resolve(directory, typeof bin === 'string' ? bin : bin.harper);
 				ok(existsSync(binPath), `harper's bin entry ${binPath} does not exist`);
 				return binPath;
 			}
 		}
-		const parent = dirname(dir);
-		ok(parent !== dir, 'Could not find the root of the installed harper package');
-		dir = parent;
+		const parent = dirname(directory);
+		ok(parent !== directory, 'Could not find the root of the installed harper package');
+		directory = parent;
 	}
 }
 
@@ -47,6 +43,8 @@ const harperBinPath = process.env.HARPER_INTEGRATION_TEST_INSTALL_SCRIPT ? undef
 export function startHarperWithComponent(ctx: ContextWithHarper, env: Record<string, string> = {}) {
 	return setupHarperWithFixture(ctx, FIXTURE_PATH, {
 		harperBinPath,
+		// By default Harper treats loopback requests as the superuser, which would hide a challenge URL that needs auth.
+		config: { authentication: { authorizeLocal: false } },
 		env: { ACME_DIRECTORY_URL: UNREACHABLE_ACME_DIRECTORY, ...env },
 	});
 }
@@ -56,29 +54,29 @@ function basicAuth(ctx: ContextWithHarper): string {
 	return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 }
 
-/** POSTs an operation to the Operations API as the admin user. */
 export async function op<T = unknown>(
 	ctx: ContextWithHarper,
 	operation: Record<string, unknown>
 ): Promise<{ status: number; body: T }> {
-	const res = await fetch(ctx.harper.operationsAPIURL, {
+	const response = await fetch(ctx.harper.operationsAPIURL, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', 'Authorization': basicAuth(ctx) },
 		body: JSON.stringify(operation),
 	});
-	return { status: res.status, body: (await res.json()) as T };
+	const text = await response.text();
+	try {
+		return { status: response.status, body: JSON.parse(text) as T };
+	} catch {
+		throw new Error(`${operation.operation} returned HTTP ${response.status} with a non-JSON body: ${text}`);
+	}
 }
 
-/** Unauthenticated, as Let's Encrypt requests the challenge. */
 export function anonFetch(ctx: ContextWithHarper, path: string): Promise<Response> {
 	return fetch(`${ctx.harper.httpURL}${path}`);
 }
 
-export function authFetch(ctx: ContextWithHarper, path: string, init: RequestInit = {}): Promise<Response> {
-	return fetch(`${ctx.harper.httpURL}${path}`, {
-		...init,
-		headers: { Authorization: basicAuth(ctx), ...(init.headers as Record<string, string>) },
-	});
+export function authFetch(ctx: ContextWithHarper, path: string): Promise<Response> {
+	return fetch(`${ctx.harper.httpURL}${path}`, { headers: { Authorization: basicAuth(ctx) } });
 }
 
 export interface ChallengeCertificateRecord {
@@ -112,10 +110,7 @@ export async function getChallengeCertificate(
 	return body[0];
 }
 
-/**
- * Fields that mark a domain as issued and not yet due for renewal, so the certificate manager leaves the
- * record alone. Without them a record is a new certificate request.
- */
+/** Without these a record is a new certificate request, which the certificate manager attempts. */
 export function issuedFields() {
 	const DAY = 24 * 60 * 60 * 1000;
 	return { issueDate: Date.now(), renewalDate: Date.now() + 60 * DAY };
@@ -134,7 +129,7 @@ export async function waitFor<T>(
 			Date.now() < deadline,
 			`Timed out after ${timeoutMs}ms waiting for ${description}; last saw ${JSON.stringify(value)}`
 		);
-		await new Promise((r) => setTimeout(r, intervalMs));
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, intervalMs));
 		value = await read();
 	}
 	return value;
