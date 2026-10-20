@@ -20,33 +20,15 @@ permissions:
   contents: read
 
 jobs:
-  generate-node-version-matrix:
-    name: Generate Node Version Matrix
-    runs-on: ubuntu-latest
-    outputs:
-      node-versions: ${{ steps.set-node-versions.outputs.node-versions }}
-
-    steps:
-      - name: Set Node versions
-        id: set-node-versions
-        env:
-          NODE_VER: ${{ github.event.inputs.node-version }}
-        run: |
-          if [ "$NODE_VER" == "all" ] || [ -z "$NODE_VER" ]; then
-            echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
-          else
-            echo "node-versions=[$NODE_VER]" >> $GITHUB_OUTPUT
-          fi
-
   integration-tests:
     name: Integration Tests (Node ${{ matrix.node-version }})
-    needs: [generate-node-version-matrix]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
       matrix:
-        node-version: ${{ fromJSON(needs.generate-node-version-matrix.outputs.node-versions) }}
+        node-version: ${{ fromJSON((github.event.inputs.node-version == '' || github.event.inputs.node-version == 'all') && '[22, 24, 26]' || format('[{0}]', github.event.inputs.node-version)) }}
 
     steps:
       - name: Checkout code

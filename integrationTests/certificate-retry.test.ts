@@ -1,21 +1,15 @@
 /**
- * Integration tests for the certificate manager's request and retry handling on a real Harper instance.
+ * Certificate attempts and retries on a real Harper: its table, subscription and leader lookup.
  *
- * The component is pointed at a local stand-in CA that rejects every request, so every certificate attempt
- * fails as soon as it reads the ACME directory. (A CA that cannot be reached at all is retried by acme-client
- * for over a minute per attempt.) That exercises, against Harper's real table, subscription and leader lookup:
- *  - a new domain ({ domain } only, as Fabric binds it) being picked up and attempted,
- *  - a failed attempt recording failedAttempts, nextAttemptAt (2 minutes out), lastError, and clearing
- *    inProgress and the challenge,
- *  - a record left inProgress by an interrupted attempt still being retried,
- *  - an issued domain not due for renewal being left alone.
- *
- * Issuance against a real CA is not covered: it needs a CA that can reach this node over HTTP.
+ * The component is pointed at a stand-in CA that rejects every request, so each attempt fails at the ACME
+ * directory read. A CA that cannot be reached at all is retried by acme-client for over a minute per attempt.
+ * Issuance is not covered: it needs a CA that can reach this node over HTTP.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { AddressInfo } from 'node:net';
 import { teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import {
@@ -48,15 +42,26 @@ function assertFirstFailureRecorded(record: ChallengeCertificateRecord, attemptS
 	);
 }
 
+function waitForFailedAttempt(ctx: ContextWithHarper, domain: string) {
+	return waitFor(
+		`${domain} to record a failed attempt`,
+		() => getChallengeCertificate(ctx, domain),
+		(record) => Boolean(record?.failedAttempts),
+		{ timeoutMs: ATTEMPT_TIMEOUT_MS }
+	);
+}
+
 suite('Certificate requests against a CA that rejects them', (ctx: ContextWithHarper) => {
 	let directoryRequests = 0;
-	const rejectingCA = createServer((req, res) => {
+	const rejectingCA = createServer((_request, response) => {
 		directoryRequests++;
-		res.writeHead(403, { 'Content-Type': 'application/problem+json' });
-		res.end(
+		response.writeHead(403, { 'Content-Type': 'application/problem+json' });
+		response.end(
 			JSON.stringify({ type: 'urn:ietf:params:acme:error:unauthorized', detail: 'test CA rejects every request' })
 		);
 	});
+	// A failed startup or teardown must not leave the server holding the test process open.
+	rejectingCA.unref();
 	let directoryUrl: string;
 
 	before(async () => {
@@ -67,60 +72,53 @@ suite('Certificate requests against a CA that rejects them', (ctx: ContextWithHa
 	});
 
 	after(async () => {
-		await teardownHarper(ctx);
-		rejectingCA.close();
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			rejectingCA.close();
+		}
 	});
 
-	test('a newly bound domain is attempted and its failure scheduled for retry', async () => {
+	test('a newly bound domain is attempted, and not again before its retry is due', async () => {
 		const domain = 'new-domain.example.com';
 		const attemptStartedAt = Date.now();
 		const { status, body } = await upsertChallengeCertificates(ctx, [{ domain }]);
 		strictEqual(status, 200, `upsert should succeed, got ${status}: ${JSON.stringify(body)}`);
 
-		const record = await waitFor(
-			`${domain} to record a failed attempt`,
-			() => getChallengeCertificate(ctx, domain),
-			(record) => Boolean(record?.failedAttempts),
-			{ timeoutMs: ATTEMPT_TIMEOUT_MS }
-		);
+		const record = await waitForFailedAttempt(ctx, domain);
 		assertFirstFailureRecorded(record!, attemptStartedAt);
 		ok(directoryRequests > 0, 'the component should have requested the configured ACME directory');
 		strictEqual(record!.lastError, `Attempting to read ACME directory returned error 403: ${directoryUrl}`);
+
+		// The failure write reaches the subscription too; it must not start another attempt.
+		const requestsAfterFailure = directoryRequests;
+		await sleep(3000);
+		strictEqual(directoryRequests, requestsAfterFailure, 'no request should reach the CA before nextAttemptAt');
+		strictEqual((await getChallengeCertificate(ctx, domain))?.failedAttempts, 1);
 	});
 
 	test('a record left inProgress by an interrupted attempt is retried', async () => {
-		// v1.0.0 skipped such records forever; now only the schedule fields decide.
 		const domain = 'stuck.example.com';
 		const attemptStartedAt = Date.now();
 		await upsertChallengeCertificates(ctx, [
 			{ domain, inProgress: true, challengeToken: 'stale-token', challengeContent: 'stale-token.keyauth' },
 		]);
 
-		const record = await waitFor(
-			`${domain} to record a failed attempt`,
-			() => getChallengeCertificate(ctx, domain),
-			(record) => Boolean(record?.failedAttempts),
-			{ timeoutMs: ATTEMPT_TIMEOUT_MS }
-		);
-		assertFirstFailureRecorded(record!, attemptStartedAt);
+		assertFirstFailureRecorded((await waitForFailedAttempt(ctx, domain))!, attemptStartedAt);
 	});
 
 	test('an issued domain that is not due for renewal is left alone', async () => {
 		const domain = 'issued.example.com';
 		const issued = issuedFields();
 		await upsertChallengeCertificates(ctx, [{ domain, ...issued }]);
-		// Give the subscription time to see the write; a probe domain written afterward shows it has caught up.
+		// Once a domain written afterward has been attempted, the subscription has seen this write.
 		const probe = 'issued-probe.example.com';
 		await upsertChallengeCertificates(ctx, [{ domain: probe }]);
-		await waitFor(
-			`${probe} to record a failed attempt`,
-			() => getChallengeCertificate(ctx, probe),
-			(record) => Boolean(record?.failedAttempts),
-			{ timeoutMs: ATTEMPT_TIMEOUT_MS }
-		);
+		await waitForFailedAttempt(ctx, probe);
 
 		const record = await getChallengeCertificate(ctx, domain);
 		ok(record, `${domain} should still exist`);
+		strictEqual(record.inProgress ?? null, null, 'no attempt should have started');
 		strictEqual(record.failedAttempts ?? null, null, 'no attempt should have been made');
 		strictEqual(record.nextAttemptAt ?? null, null, 'no attempt should have been scheduled');
 		strictEqual(new Date(record.renewalDate!).getTime(), issued.renewalDate);
