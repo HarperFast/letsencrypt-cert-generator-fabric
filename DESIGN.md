@@ -17,3 +17,11 @@ progress: it revisits every record, including ones written while the subscriptio
 A record is marked issued only after `add_certificate` succeeds, and a certificate that was issued but
 failed to install is kept in memory and installed on the next attempt rather than requested again
 (Let's Encrypt allows 5 duplicate certificates per week).
+
+## acme-client network errors
+
+acme-client 5.4.0 replaces any request error without an HTTP response (refused connection, DNS failure,
+timeout) with a `TypeError` once it stops retrying. `lib/acmeNetworkErrors.js` puts an interceptor ahead of
+acme-client's to keep the real error, so `lastError` says why the CA could not be reached. It mirrors
+acme-client's retry rule and depends on axios running response interceptors in order. Re-check both when
+upgrading acme-client or axios; `test/acmeNetworkErrors.test.js` runs against the installed versions.
