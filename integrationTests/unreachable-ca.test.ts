@@ -1,6 +1,6 @@
 /**
- * With the default UNREACHABLE_ACME_DIRECTORY, nothing accepts the connection. acme-client retries for over a
- * minute, then the failure must reach lastError as the network error rather than acme-client's own TypeError.
+ * acme-client 5.4.0 reports a final error without an HTTP response as a TypeError; lastError must show the
+ * network error instead (lib/acmeNetworkErrors.js).
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, match } from 'node:assert/strict';
