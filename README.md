@@ -1,5 +1,6 @@
 # letsencrypt-cert-generator-fabric
-A Harper Application for handling HTTP letsencrypt challenges for fabric bring your own domain. 
+
+A Harper Application for handling HTTP letsencrypt challenges for fabric bring your own domain.
 This was added to your cluster to support completing the challenge and getting certs issued for your domain.
 This application will renew your certificates for you.
 If you no longer wish to use your own certificates, you can unbind your domain from your cluster in [Fabric Studio](https://fabric.harper.fast)
@@ -49,3 +50,17 @@ another Harper build, such as `@harperfast/harper-pro`, to run them against it.
 Set `ACME_DIRECTORY_URL` to request certificates from a different ACME server, such as
 [Let's Encrypt staging](https://letsencrypt.org/docs/staging-environment/) or a local
 [Pebble](https://github.com/letsencrypt/pebble) server. It defaults to Let's Encrypt production.
+
+## Releasing
+
+Every push to `main` is released by [semantic-release](https://semantic-release.gitbook.io/): it bumps the version in
+`package.json`, tags it, and publishes a GitHub release with notes built from the commit messages. Commit messages don't
+need to follow [Conventional Commits](https://www.conventionalcommits.org/), but they choose the version when they do:
+
+| Commit message                                    | Release |
+| ------------------------------------------------- | ------- |
+| `feat!: ...`, or a `BREAKING CHANGE: ...` footer  | major   |
+| `feat: ...`                                       | minor   |
+| anything else, such as `Fix the renewal schedule` | patch   |
+
+The rules are in [release.config.js](release.config.js).

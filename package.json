@@ -17,9 +17,12 @@
   },
   "devDependencies": {
     "@harperfast/integration-testing": "^1.0.5",
+    "@semantic-release/git": "^10.0.1",
     "@types/node": "^26.6.5",
+    "conventional-changelog-conventionalcommits": "^9.3.1",
     "harper": "^5.3.2",
     "prettier": "^3.3.3",
+    "semantic-release": "^25.0.9",
     "typescript": "^7.0.2"
   },
   "overrides": {
