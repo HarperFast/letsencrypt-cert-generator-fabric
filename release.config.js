@@ -23,7 +23,7 @@ export default {
 				parserOpts,
 				releaseRules: [
 					{ breaking: true, release: 'major' },
-					{ type: '{feat,Feat,FEAT}', release: 'minor' },
+					{ type: '[fF][eE][aA][tT]', release: 'minor' },
 					// Every commit has a hash, so everything else, conventional or not, is a patch.
 					{ hash: '*', release: 'patch' },
 				],
